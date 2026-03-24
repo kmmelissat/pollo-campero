@@ -1,0 +1,9 @@
+# Copia como docker-compose.override.yml en esta misma carpeta para que GET /orders
+# lea desde la misma base que las escrituras (útil en demo sin replicación real).
+#
+#   cp docker-compose.read-primary.example.yml docker-compose.override.yml
+#
+services:
+  order-service:
+    environment:
+      READ_DB_URL: postgresql://pollos:pollos@postgres-primary:5432/orders

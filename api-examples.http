@@ -1,0 +1,39 @@
+### Variables (ajusta host/puertos si corres sin Docker)
+@menuHost = http://localhost:3001
+@orderHost = http://localhost:3002
+@notificationHost = http://localhost:3003
+
+### Health checks
+GET {{menuHost}}/health
+GET {{orderHost}}/health
+GET {{notificationHost}}/health
+
+### Menú
+GET {{menuHost}}/menu
+GET {{menuHost}}/menu/combo-campero
+
+### Crear pedido (valida contra menú y publica order.created)
+POST {{orderHost}}/orders
+Content-Type: application/json
+
+{
+  "customerName": "María Pérez",
+  "items": [
+    { "productId": "combo-campero", "quantity": 1 },
+    { "productId": "papas-mediana", "quantity": 2 }
+  ]
+}
+
+### Listar pedidos (lectura vía READ_DB_URL / réplica simulada)
+GET {{orderHost}}/orders
+
+### Pedido por id (sustituye UUID)
+GET {{orderHost}}/orders/00000000-0000-0000-0000-000000000000
+
+### Actualizar estado (publica order.updated)
+PATCH {{orderHost}}/orders/00000000-0000-0000-0000-000000000000/status
+Content-Type: application/json
+
+{
+  "status": "confirmed"
+}
