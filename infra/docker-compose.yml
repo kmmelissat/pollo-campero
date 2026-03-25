@@ -7,7 +7,8 @@ services:
       POSTGRES_PASSWORD: pollos
       POSTGRES_DB: orders
     ports:
-      - "5432:5432"
+      # Host 5434 evita choque con otro Postgres en 5432 (p. ej. otro compose).
+      - "5434:5432"
     volumes:
       - postgres_primary_data:/var/lib/postgresql/data
     healthcheck:
