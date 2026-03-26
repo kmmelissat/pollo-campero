@@ -176,3 +176,141 @@ Al cambiar estado con `PATCH /orders/:id/status`, se actualiza la primaria y se 
 - No hay frontend ni manifiestos Kubernetes en este repositorio.
 - El menú es **semilla en memoria** (`menu-service/src/services/menu-seed.ts`).
 - `notification-service` deja un `NotificationDispatcherService` preparado para WebSocket/email sin implementarlos aún.
+
+## Infraestructura y despliegue
+Arquitectura desplegada
+
+El sistema está compuesto por:
+
+menu-service
+order-service (con 2 réplicas)
+notification-service
+postgres-primary
+postgres-replica
+rabbitmq
+
+Todos desplegados dentro del namespace:
+
+pollos
+ Prerrequisitos
+Docker Desktop instalado
+Minikube instalado
+kubectl instalado
+Node.js (para build de servicios)
+ 1. Iniciar Minikube
+minikube start --driver=docker
+
+Verificar:
+
+kubectl get nodes
+ 2. Estructura de Kubernetes
+
+Crear carpeta:
+
+infra/k8s
+
+Aquí se encuentran todos los manifiestos YAML:
+
+namespace
+deployments
+services
+ 3. Crear namespace
+kubectl apply -f namespace.yaml
+
+Verificar:
+
+kubectl get ns
+ 4. Desplegar base de datos
+PostgreSQL Primary
+kubectl apply -f postgres-primary-deployment.yaml
+kubectl apply -f postgres-primary-service.yaml
+PostgreSQL Replica
+kubectl apply -f postgres-replica-deployment.yaml
+kubectl apply -f postgres-replica-service.yaml
+ 5. Desplegar RabbitMQ
+kubectl apply -f rabbitmq-deployment.yaml
+kubectl apply -f rabbitmq-service.yaml
+ 6. Construir imágenes
+
+Desde la raíz del proyecto:
+
+docker build -t pollos-menu-service:latest -f menu-service/Dockerfile .
+docker build -t pollos-order-service:latest -f order-service/Dockerfile .
+docker build -t pollos-notification-service:latest -f notification-service/Dockerfile .
+ 7. Cargar imágenes en Minikube
+minikube image load pollos-menu-service:latest
+minikube image load pollos-order-service:latest
+minikube image load pollos-notification-service:latest
+
+Verificar:
+
+minikube image ls
+ 8. Desplegar microservicios
+Menu Service
+kubectl apply -f menu-service-deployment.yaml
+kubectl apply -f menu-service-service.yaml
+Order Service (2 réplicas)
+kubectl apply -f order-service-deployment.yaml
+kubectl apply -f order-service-service.yaml
+Notification Service
+kubectl apply -f notification-service-deployment.yaml
+kubectl apply -f notification-service-service.yaml
+ 9. Verificación
+Pods
+kubectl get pods -n pollos
+Services
+kubectl get services -n pollos
+Deployments
+kubectl get deployments -n pollos
+ 10. Exposición del sistema
+
+Obtener URL externa:
+
+minikube service order-service -n pollos --url
+
+Probar:
+
+curl <URL>/health
+ 11. Comunicación entre servicios
+
+Flujo:
+
+order-service recibe pedido
+consulta menu-service
+guarda en postgres-primary
+publica evento en RabbitMQ
+notification-service consume evento
+
+Ver logs:
+
+kubectl logs deployment/order-service -n pollos
+kubectl logs deployment/notification-service -n pollos
+ 12. Prueba de resiliencia
+
+Eliminar un pod:
+
+kubectl delete pod <nombre-pod> -n pollos
+
+Ver recreación automática:
+
+kubectl get pods -n pollos -w
+ 13. Pruebas funcionales
+Health
+curl <URL>/health
+Crear pedido
+curl -X POST <URL>/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customerName": "Melissa",
+    "items": [
+      { "productId": 1, "quantity": 2 }
+    ]
+  }'
+ 14. Base de datos distribuida
+Escritura → postgres-primary
+Lectura → postgres-replica
+
+Configurado en:
+
+WRITE_DB_URL
+READ_DB_URL
