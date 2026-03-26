@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: pollos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: notification-service
+          image: pollos-notification-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3003
+          env:
+            - name: PORT
+              value: "3003"
+            - name: NODE_ENV
+              value: "production"
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq:5672"

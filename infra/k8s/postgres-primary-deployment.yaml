@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-primary
+  namespace: pollos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-primary
+  template:
+    metadata:
+      labels:
+        app: postgres-primary
+    spec:
+      containers:
+        - name: postgres-primary
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "pollos"
+            - name: POSTGRES_PASSWORD
+              value: "pollos"
+            - name: POSTGRES_DB
+              value: "orders"

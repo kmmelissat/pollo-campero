@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: pollos
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+        - name: order-service
+          image: pollos-order-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3002
+          env:
+            - name: PORT
+              value: "3002"
+            - name: NODE_ENV
+              value: "production"
+            - name: MENU_SERVICE_URL
+              value: "http://menu-service:3001"
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq:5672"
+            - name: DATABASE_URL
+              value: "postgresql://pollos:pollos@postgres-primary:5432/orders"
+            - name: WRITE_DB_URL
+              value: "postgresql://pollos:pollos@postgres-primary:5432/orders"
+            - name: READ_DB_URL
+              value: "postgresql://pollos:pollos@postgres-replica:5432/orders"

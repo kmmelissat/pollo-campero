@@ -17,6 +17,7 @@ COPY order-service/prisma ./prisma
 COPY order-service/src ./src
 COPY order-service/tsconfig.json ./
 COPY order-service/docker-entrypoint.sh ./
+RUN sed -i 's/\r$//' docker-entrypoint.sh
 RUN chmod +x docker-entrypoint.sh
 
 RUN npx prisma generate
