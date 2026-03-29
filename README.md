@@ -2,189 +2,122 @@
 
 Monorepo académico con **microservicios** en Node.js, **Express**, **TypeScript**, **PostgreSQL** (primaria + réplica con **replicación lógica**), **RabbitMQ**, **Docker** y **manifiestos Kubernetes** (`infra/k8s/`). Demuestra comunicación por red, eventos asíncronos, lectura/escritura en instancias distintas y despliegue en clúster.
 
-## Servicios
+---
 
-| Servicio | Puerto | Rol |
-|----------|--------|-----|
-| `menu-service` | 3001 | Catálogo en memoria (semilla), validación de productos |
-| `order-service` | 3002 | Pedidos: validación HTTP al menú, escritura en PostgreSQL primario (Prisma), lecturas en réplica (`pg`), publicación a RabbitMQ; opcionalmente configura publicación/suscripción entre ambas bases |
-| `notification-service` | 3003 | HTTP mínimo + consumidor RabbitMQ con reconexión básica |
+## Guía principal: probar con Docker (proyecto final)
 
-## Estructura de carpetas
+Esta es la forma **recomendada** para demostrar el sistema completo en máquina local: varios contenedores, red interna, base de datos “distribuida” (dos instancias + sync lógica), mensajería y API accesible desde el navegador o `curl`.
 
-```
-backend/
-├── shared/                 # Tipos y constantes compartidos (eventos RabbitMQ)
-├── menu-service/
-├── order-service/          # Prisma → escrituras; pg → lecturas (READ_DB_URL)
-├── notification-service/
-├── infra/
-│   ├── docker-compose.yml
-│   ├── k8s/               # Deployments, Services, namespace `pollos`
-│   └── db-init/           # Notas de PostgreSQL y replicación
-├── scripts/
-│   └── demo-order-flow.sh
-├── api-examples.http
-└── README.md
-```
+### Qué queda cubierto frente al enunciado típico
 
-## Requisitos
+| Requisito | Cómo se ve con Docker Compose |
+|-----------|--------------------------------|
+| Varios servicios independientes | `menu-service`, `order-service`, `notification-service` + Postgres ×2 + RabbitMQ, cada uno en su contenedor |
+| Comunicación por red | HTTP (pedidos ↔ menú), AMQP (pedidos ↔ notificaciones), SQL (pedidos ↔ primaria/réplica) |
+| Servicio de entrada (API) | `order-service` en [http://localhost:3002](http://localhost:3002) |
+| Servicios de negocio / datos | Menú, notificaciones; datos en `postgres-primary` y `postgres-replica` |
+| Red pública (local) | Puertos expuestos al host: 3001, 3002, 3003, 15672 (RabbitMQ UI) |
+| Base de datos distribuida (simulada) | Escritura en primaria; lectura en réplica; replicación lógica al arrancar |
+| Mensajería entre servicios | Eventos `order.*` vía RabbitMQ |
 
-- Node.js 20+
-- Docker y Docker Compose (para el stack completo)
+La **réplica del mismo servicio en Kubernetes** (2 pods de `order-service` + balanceo) se demuestra en la sección [Despliegue en Kubernetes](#despliegue-en-kubernetes-minikube) más abajo.
 
-## Variables de entorno
+### Prerrequisitos
 
-Cada servicio incluye un `.env.example`. Resumen:
+- **Docker** y **Docker Compose** (Docker Desktop u equivalente)
+- Opcional: **Node.js 20+** solo si compilas o ejecutas servicios fuera de Docker
 
-| Variable | Servicio | Descripción |
-|----------|----------|-------------|
-| `PORT` | todos | Puerto HTTP |
-| `NODE_ENV` | todos | `development` \| `production` |
-| `MENU_SERVICE_URL` | order-service | URL base del menú (p. ej. `http://localhost:3001`) |
-| `RABBITMQ_URL` | order-service, notification-service | AMQP (p. ej. `amqp://guest:guest@localhost:5672`) |
-| `WRITE_DB_URL` | order-service | PostgreSQL **primario** (Prisma escrituras) |
-| `READ_DB_URL` | order-service | PostgreSQL **réplica** (lecturas `GET /orders`, `GET /orders/:id`) |
-| `SETUP_LOGICAL_REPLICATION` | order-service (Docker/K8s) | `true` para crear publicación en primaria y suscripción en réplica al arrancar |
-| `PG_PRIMARY_HOST` / `PG_REPLICA_HOST` | order-service | Hostnames DNS internos (por defecto `postgres-primary` / `postgres-replica`) |
+### Pasos (desde cero)
 
-## Cómo correr cada servicio (local, sin Docker)
-
-1. **RabbitMQ y PostgreSQL** deben estar disponibles (o usa Docker Compose solo para infra).
-
-2. **Paquete compartido** (desde `backend/shared`):
+1. **Ir a la carpeta de infraestructura** (desde la raíz del repo `backend/`):
 
    ```bash
-   npm install && npm run build
+   cd infra
    ```
 
-3. **menu-service**
+2. **Arranque limpio** (obligatorio si ya tenías Postgres sin `wal_level=logical`, o si falló la replicación):
 
    ```bash
-   cd menu-service
-   cp .env.example .env
-   npm install && npm run dev
+   docker compose down -v
    ```
 
-4. **order-service**
+3. **Levantar todo** (construye imágenes si hace falta):
 
    ```bash
-   cd order-service
-   cp .env.example .env
-   # Ajusta WRITE_DB_URL, READ_DB_URL, MENU_SERVICE_URL, RABBITMQ_URL
-   npm install
-   npx prisma migrate deploy
-   npm run dev
+   docker compose up --build
    ```
 
-   Si `READ_DB_URL` apunta a **otra** instancia PostgreSQL, aplica también las migraciones allí (por ejemplo: `WRITE_DB_URL="$READ_DB_URL" npx prisma migrate deploy` en esa misma shell).  
-   Para un solo Postgres local, usa la **misma** URL en `READ_DB_URL` y `WRITE_DB_URL` para que `GET /orders` vea los datos.
+   En segundo plano: `docker compose up --build -d` y luego `docker compose logs -f order-service` para ver migraciones y el script de replicación.
 
-5. **notification-service**
+4. **Esperar a que los healthchecks pasen** (el `order-service` tarda un poco: migraciones en ambas bases + publicación/suscripción). Comprueba:
 
    ```bash
-   cd notification-service
-   cp .env.example .env
-   npm install && npm run dev
+   curl -sf http://localhost:3001/health
+   curl -sf http://localhost:3002/health
+   curl -sf http://localhost:3003/health
    ```
 
-## Docker Compose (recomendado)
+5. **Comunicación interna + API pública** — abre en el navegador o usa `curl`:
 
-Desde `backend/infra`:
+   - Menú (catálogo): [http://localhost:3001/menu](http://localhost:3001/menu)
+   - Pedidos (API de entrada): [http://localhost:3002/orders](http://localhost:3002/orders)
 
-```bash
-docker compose up --build
-```
+6. **Demostrar flujo completo** (los `productId` son **strings** del menú, p. ej. `combo-campero`):
 
-- **Menú**: [http://localhost:3001/menu](http://localhost:3001/menu)  
-- **Pedidos**: [http://localhost:3002/orders](http://localhost:3002/orders)  
-- **RabbitMQ Management**: [http://localhost:15672](http://localhost:15672) (guest/guest)
+   ```bash
+   curl -sf -X POST http://localhost:3002/orders \
+     -H "Content-Type: application/json" \
+     -d '{"customerName":"Demo","items":[{"productId":"combo-campero","quantity":1}]}'
+   ```
 
-### Primaria y réplica (replicación lógica)
+   Luego **lectura desde la réplica** (el `GET` usa `READ_DB_URL`, no la primaria):
 
-Hay dos instancias PostgreSQL (`postgres-primary`, `postgres-replica`). El `order-service`:
+   ```bash
+   sleep 2
+   curl -sf http://localhost:3002/orders
+   ```
 
-- Escribe con **Prisma** en `WRITE_DB_URL` (primaria).
-- Lee con **`pg`** desde `READ_DB_URL` (réplica).
+   Debes ver el pedido creado en la lista.
 
-En **Docker Compose** y **Kubernetes**, `SETUP_LOGICAL_REPLICATION=true` hace que, tras `prisma migrate deploy` en ambas bases, se ejecute `order-service/scripts/setup-logical-replication.sh`:
+7. **Demostrar mensajería** — el `notification-service` consume de RabbitMQ:
 
-1. La primaria corre con `wal_level=logical`.
-2. Se crea la publicación `pollos_orders_pub` sobre la tabla `orders`.
-3. En la réplica se crea la suscripción `pollos_orders_sub` hacia la primaria.
+   ```bash
+   docker logs pollos-notification-service 2>&1 | tail -30
+   ```
 
-Con eso, los datos escritos en la primaria **se replican** a la réplica y `GET /orders` refleja los pedidos creados con `POST /orders` (tras un breve retardo de replicación).
+   También puedes abrir la UI: [http://localhost:15672](http://localhost:15672) (usuario/contraseña `guest` / `guest`).
 
-**Desarrollo local con un solo Postgres:** usa la misma URL en `READ_DB_URL` y `WRITE_DB_URL` y **no** definas `SETUP_LOGICAL_REPLICATION`.
+8. **Parar el stack** (mantiene volúmenes):
 
-**Si la primaria ya existía sin `wal_level=logical`** en el volumen, recrea los volúmenes (`docker compose down -v`) o el arranque puede fallar al crear la publicación.
+   ```bash
+   docker compose down
+   ```
 
-## Endpoints
+   Para borrar datos de Postgres: `docker compose down -v`.
 
-### menu-service
+### Qué hace el stack respecto a Postgres
 
-- `GET /health`
-- `GET /menu`
-- `GET /menu/:id`
+- **Primaria** (`postgres-primary`): recibe las **escrituras** (Prisma).
+- **Réplica** (`postgres-replica`): sirve las **lecturas** de listados/detalle (`pg`).
+- Con `SETUP_LOGICAL_REPLICATION=true` (ya definido en `docker-compose.yml`), al arrancar `order-service` se crean publicación y suscripción lógicas para la tabla `orders`, de modo que los datos **sincronizan** de primaria → réplica.
 
-### order-service
+Si cambias la configuración de WAL en una primaria que ya tenía volumen antiguo, usa `docker compose down -v` antes de volver a subir.
 
-- `GET /health`
-- `POST /orders`
-- `GET /orders`
-- `GET /orders/:id`
-- `PATCH /orders/:id/status` — body: `{ "status": "pending" | "confirmed" | ... }`
+### Otras formas de probar (mismo stack levantado)
 
-### notification-service
-
-- `GET /health`
-
-## Formato de respuesta
-
-**Éxito:** `{ "success": true, "data": ... }`  
-**Error:** `{ "success": false, "message": "...", "details": ... }` (cuando aplica)
-
-## Eventos RabbitMQ
-
-- Exchange: `orders` (tipo `topic`, durable).
-- Routing keys: `order.created`, `order.updated`.
-- Payload JSON sugerido (campos): `eventType`, `orderId`, `status`, `timestamp`, `summary`.
-
-## Ejemplo de flujo (crear pedido)
-
-1. El cliente llama `POST /orders` con `customerName` e `items` (`productId`, `quantity`).
-2. `order-service` consulta `menu-service` por cada producto (timeout ~5s).
-3. Se valida existencia y `available`, se calculan subtotales y total.
-4. Se persiste en la **primaria** (Prisma); la réplica recibe la fila vía replicación lógica cuando está configurada.
-5. Se publica `order.created`.
-6. `notification-service` consume el mensaje y escribe un bloque de log legible.
-
-Al cambiar estado con `PATCH /orders/:id/status`, se actualiza la primaria y se publica `order.updated`.
-
-## Probar con `.http` o script
-
-- VS Code / IntelliJ: abre `api-examples.http` y ejecuta las peticiones (ajusta UUID tras crear pedido).
-- Terminal (requiere `jq`):
+- **VS Code / IntelliJ:** archivo `api-examples.http` en la raíz del repo.
+- **Script de terminal** (requiere `jq`):
 
   ```bash
   chmod +x scripts/demo-order-flow.sh
   ./scripts/demo-order-flow.sh
   ```
 
-## Stack técnico
+---
 
-- Validación: **Zod**
-- ORM / migraciones (escritura): **Prisma**
-- Lecturas réplica: **`pg`**
-- Mensajería: **amqplib**
+## Despliegue en Kubernetes (Minikube)
 
-## Notas
-
-- No hay frontend; los manifiestos Kubernetes viven en `infra/k8s/`.
-- El menú es **semilla en memoria** (`menu-service/src/services/menu-seed.ts`).
-- `notification-service` expone un `NotificationDispatcherService` preparado para WebSocket/email sin implementarlos aún.
-
-## Infraestructura y despliegue (Kubernetes)
+Aquí se cumple además: **≥3 Deployments**, **≥3 Services**, **acceso externo** al API (NodePort), **2 réplicas** de `order-service`, misma lógica de primaria/réplica y RabbitMQ.
 
 ### Arquitectura en el clúster
 
@@ -196,7 +129,7 @@ Al cambiar estado con `PATCH /orders/:id/status`, se actualiza la primaria y se 
 
 - Docker (o Docker Desktop)
 - Minikube (u otro clúster local), `kubectl`
-- Node.js 20+ (solo para compilar si ajustas código)
+- Node.js 20+ (solo si modificas código y reconstruyes imágenes)
 
 ### Pasos (desde `infra/k8s/`)
 
@@ -267,7 +200,7 @@ Al cambiar estado con `PATCH /orders/:id/status`, se actualiza la primaria y se 
 
 ### Comunicación entre servicios
 
-Flujo típico: el cliente pega al `order-service` → HTTP a `menu-service` → escritura en `postgres-primary` → replicación lógica hacia `postgres-replica` → lecturas `GET /orders` desde la réplica → evento en RabbitMQ → `notification-service`.
+Flujo típico: cliente → `order-service` → HTTP a `menu-service` → escritura en `postgres-primary` → replicación lógica → `GET /orders` lee la réplica → RabbitMQ → `notification-service`.
 
 ```bash
 kubectl logs deployment/order-service -n pollos
@@ -281,21 +214,151 @@ kubectl delete pod -n pollos -l app=order-service
 kubectl get pods -n pollos -w
 ```
 
-### Prueba rápida de API
+### Prueba rápida de API en el clúster
 
 ```bash
 URL=$(minikube service order-service -n pollos --url)
 curl -sf "$URL/health"
 curl -sf -X POST "$URL/orders" \
   -H "Content-Type: application/json" \
-  -d '{"customerName":"Demo","items":[{"productId":1,"quantity":1}]}'
+  -d '{"customerName":"Demo","items":[{"productId":"combo-campero","quantity":1}]}'
 curl -sf "$URL/orders"
 ```
 
-La lista en `GET /orders` debe incluir el pedido creado (lectura desde la réplica tras replicar).
-
-### Base de datos distribuida
+### Base de datos distribuida (manifiestos)
 
 - **Escritura:** `WRITE_DB_URL` → `postgres-primary` (Prisma).
 - **Lectura:** `READ_DB_URL` → `postgres-replica` (`pg`).
-- **Sincronización:** publicación `pollos_orders_pub` / suscripción `pollos_orders_sub` (script al arrancar `order-service` con `SETUP_LOGICAL_REPLICATION=true`).
+- **Sincronización:** publicación `pollos_orders_pub` / suscripción `pollos_orders_sub` al arrancar `order-service` con `SETUP_LOGICAL_REPLICATION=true`.
+
+---
+
+## Servicios
+
+| Servicio | Puerto | Rol |
+|----------|--------|-----|
+| `menu-service` | 3001 | Catálogo en memoria (semilla), validación de productos |
+| `order-service` | 3002 | Pedidos: HTTP al menú, escritura en primaria (Prisma), lecturas en réplica (`pg`), RabbitMQ; configura replicación lógica si `SETUP_LOGICAL_REPLICATION=true` |
+| `notification-service` | 3003 | HTTP mínimo + consumidor RabbitMQ |
+
+---
+
+## Variables de entorno (referencia)
+
+Cada servicio tiene `.env.example`. Resumen:
+
+| Variable | Servicio | Descripción |
+|----------|----------|-------------|
+| `PORT` | todos | Puerto HTTP |
+| `NODE_ENV` | todos | `development` \| `production` |
+| `MENU_SERVICE_URL` | order-service | URL base del menú (p. ej. `http://localhost:3001`) |
+| `RABBITMQ_URL` | order-service, notification-service | AMQP |
+| `WRITE_DB_URL` | order-service | PostgreSQL **primario** (Prisma) |
+| `READ_DB_URL` | order-service | PostgreSQL **réplica** (lecturas `GET /orders`) |
+| `SETUP_LOGICAL_REPLICATION` | order-service | `true` en Docker/K8s del repo: publicación + suscripción al arrancar |
+| `PG_PRIMARY_HOST` / `PG_REPLICA_HOST` | order-service | Hosts DNS internos (por defecto `postgres-primary` / `postgres-replica`) |
+
+En **Docker Compose** estos valores ya vienen definidos; no necesitas `.env` para la demo estándar.
+
+---
+
+## Cómo correr sin Docker (solo desarrollo)
+
+1. Infra: RabbitMQ y PostgreSQL por tu cuenta, o `docker compose` solo con los servicios de datos.
+2. **Shared** (desde `backend/shared`):
+
+   ```bash
+   npm install && npm run build
+   ```
+
+3. **menu-service** — `cd menu-service`, `cp .env.example .env`, `npm install && npm run dev`.
+4. **order-service** — `cd order-service`, `cp .env.example .env`, ajusta URLs, `npm install`, `npx prisma migrate deploy`, `npm run dev`.  
+   Si usas **dos** Postgres, aplica migraciones también en la réplica (`WRITE_DB_URL="$READ_DB_URL" npx prisma migrate deploy`). Con **un solo** Postgres, usa la misma URL en `READ_DB_URL` y `WRITE_DB_URL` y **no** actives `SETUP_LOGICAL_REPLICATION`.
+5. **notification-service** — `cd notification-service`, `cp .env.example .env`, `npm install && npm run dev`.
+
+---
+
+## Estructura de carpetas
+
+```
+backend/
+├── shared/
+├── menu-service/
+├── order-service/          # Prisma (escritura); pg (lectura réplica); scripts de replicación
+├── notification-service/
+├── infra/
+│   ├── docker-compose.yml
+│   ├── k8s/
+│   └── db-init/
+├── scripts/
+│   └── demo-order-flow.sh
+├── api-examples.http
+└── README.md
+```
+
+---
+
+## Endpoints
+
+### menu-service
+
+- `GET /health`
+- `GET /menu`
+- `GET /menu/:id`
+
+### order-service
+
+- `GET /health`
+- `POST /orders`
+- `GET /orders`
+- `GET /orders/:id`
+- `PATCH /orders/:id/status` — body: `{ "status": "pending" | "confirmed" | ... }`
+
+### notification-service
+
+- `GET /health`
+
+---
+
+## Formato de respuesta
+
+**Éxito:** `{ "success": true, "data": ... }`  
+**Error:** `{ "success": false, "message": "...", "details": ... }` (cuando aplica)
+
+---
+
+## Eventos RabbitMQ
+
+- Exchange: `orders` (tipo `topic`, durable).
+- Routing keys: `order.created`, `order.updated`.
+- Payload sugerido: `eventType`, `orderId`, `status`, `timestamp`, `summary`.
+
+---
+
+## Ejemplo de flujo (crear pedido)
+
+1. `POST /orders` con `customerName` e `items` (`productId` como **string**, `quantity` número).
+2. `order-service` consulta `menu-service` por cada producto.
+3. Validación, subtotales y total.
+4. Persistencia en **primaria**; la réplica recibe la fila vía replicación lógica (Docker/K8s con `SETUP_LOGICAL_REPLICATION`).
+5. Publicación `order.created`.
+6. `notification-service` consume y registra en log.
+
+Con `PATCH /orders/:id/status` se actualiza la primaria y se publica `order.updated`.
+
+---
+
+## Stack técnico
+
+- Validación: **Zod**
+- ORM / migraciones (escritura): **Prisma**
+- Lecturas réplica: **`pg`**
+- Mensajería: **amqplib**
+
+---
+
+## Notas
+
+- No hay frontend; manifiestos Kubernetes en `infra/k8s/`.
+- Menú semilla: `menu-service/src/services/menu-seed.ts`.
+- Override opcional: `infra/docker-compose.read-primary.example.yml` (leer desde primaria y desactivar setup de replicación).
