@@ -128,12 +128,27 @@ Aquí se cumple además: **≥3 Deployments**, **≥3 Services**, **acceso exter
 ### Prerrequisitos
 
 - Docker (o Docker Desktop)
-- Minikube (u otro clúster local), `kubectl`
+- Un **clúster Kubernetes local** (Minikube, **Kind**, K3s o el Kubernetes integrado de Docker Desktop) y `kubectl`
 - Node.js 20+ (solo si modificas código y reconstruyes imágenes)
+
+### Antes de usar `kubectl`: instalar clúster y Minikube
+
+- **`zsh: command not found: minikube`** — Minikube no está instalado. En macOS con Homebrew:
+
+  ```bash
+  brew install minikube
+  minikube start --driver=docker
+  ```
+
+  Alternativas: [Kind](https://kind.sigs.k8s.io/), o en Docker Desktop: **Settings → Kubernetes → Enable Kubernetes** y luego `kubectl config use-context docker-desktop`.
+
+- **`connection refused` a `localhost:8080`** al ejecutar `kubectl get nodes` — no hay API server de Kubernetes en marcha o `kubectl` no apunta a ningún clúster. Primero arranca Minikube (o el clúster que uses); solo después `kubectl get nodes` debe mostrar un nodo `Ready`. Si aún falla: `kubectl config get-contexts` y elige el contexto correcto (`minikube`, `kind-kind`, `docker-desktop`, etc.).
+
+- Para la entrega, **Docker Compose** ya demuestra casi todo el enunciado; Kubernetes es el paso adicional si el curso lo exige con clúster real.
 
 ### Pasos (desde `infra/k8s/`)
 
-1. **Iniciar Minikube** (ejemplo):
+1. **Iniciar Minikube** (ejemplo; omite si usas otro clúster ya configurado):
 
    ```bash
    minikube start --driver=docker
