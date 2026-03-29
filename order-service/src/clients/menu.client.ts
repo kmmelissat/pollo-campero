@@ -28,7 +28,13 @@ export class MenuClient {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      console.log(`[order-service] GET ${url}`);
       const res = await fetch(url, { signal: controller.signal });
+      console.log("[order-service] menu-service responded", {
+        url,
+        status: res.status,
+        productId,
+      });
       if (!res.ok) {
         if (res.status === 404) {
           throw new AppError(`Producto no encontrado: ${productId}`, 400);
@@ -40,6 +46,10 @@ export class MenuClient {
       if (!parsed.success) {
         throw new AppError("Respuesta inválida de menu-service", 502);
       }
+      console.log("[order-service] menu-service returned product", {
+        productId: parsed.data.data.id,
+        available: parsed.data.data.available,
+      });
       return parsed.data.data;
     } catch (e) {
       if (e instanceof AppError) throw e;

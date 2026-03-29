@@ -16,6 +16,7 @@ export class MenuController {
   getById = (req: Request, res: Response, next: NextFunction): void => {
     try {
       const id = typeof req.params.id === "string" ? req.params.id : req.params.id?.[0];
+      console.log("[menu-service] received request for product", { id });
       if (!id) {
         res.status(400).json({ success: false, message: "id inválido" });
         return;
@@ -28,6 +29,10 @@ export class MenuController {
         });
         return;
       }
+      console.log("[menu-service] returning product", {
+        id: product.id,
+        available: product.available,
+      });
       res.json({ success: true, data: product });
     } catch (e) {
       next(e);

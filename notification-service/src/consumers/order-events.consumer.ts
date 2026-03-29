@@ -66,6 +66,10 @@ export class OrderEventsConsumer {
           if (!msg) return;
           const routingKey = msg.fields.routingKey;
           const raw = msg.content.toString();
+          console.log("[notification-service] received order event", {
+            routingKey,
+            raw,
+          });
           try {
             const json: unknown = JSON.parse(raw);
             const parsed = payloadSchema.safeParse(json);
