@@ -1,9 +1,13 @@
 # Copia como docker-compose.override.yml en esta misma carpeta para que GET /orders
-# lea desde la misma base que las escrituras (útil en demo sin replicación real).
+# lea desde la primaria (misma URL que las escrituras).
+# Útil si desactivas la replicación o para depurar sin tocar la réplica.
 #
 #   cp docker-compose.read-primary.example.yml docker-compose.override.yml
+#
+# Si usas este override, desactiva el setup de replicación para evitar trabajo innecesario:
 #
 services:
   order-service:
     environment:
       READ_DB_URL: postgresql://pollos:pollos@postgres-primary:5432/orders
+      SETUP_LOGICAL_REPLICATION: "false"

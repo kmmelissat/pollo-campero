@@ -1,13 +1,13 @@
 # Backend — sistema distribuido de pedidos (pollo / delivery)
 
-Monorepo académico con **microservicios** en Node.js, **Express**, **TypeScript**, **PostgreSQL** (primaria + réplica simulada), **RabbitMQ** y **Docker**. Pensado para demostrar comunicación por red, eventos asíncronos y separación lectura/escritura antes de desplegar en **Kubernetes** (manifiestos fuera de alcance por ahora).
+Monorepo académico con **microservicios** en Node.js, **Express**, **TypeScript**, **PostgreSQL** (primaria + réplica con **replicación lógica**), **RabbitMQ**, **Docker** y **manifiestos Kubernetes** (`infra/k8s/`). Demuestra comunicación por red, eventos asíncronos, lectura/escritura en instancias distintas y despliegue en clúster.
 
 ## Servicios
 
 | Servicio | Puerto | Rol |
 |----------|--------|-----|
 | `menu-service` | 3001 | Catálogo en memoria (semilla), validación de productos |
-| `order-service` | 3002 | Pedidos: validación vía HTTP al menú, escritura en PostgreSQL primario, lecturas vía `pg` hacia réplica, publicación a RabbitMQ |
+| `order-service` | 3002 | Pedidos: validación HTTP al menú, escritura en PostgreSQL primario (Prisma), lecturas en réplica (`pg`), publicación a RabbitMQ; opcionalmente configura publicación/suscripción entre ambas bases |
 | `notification-service` | 3003 | HTTP mínimo + consumidor RabbitMQ con reconexión básica |
 
 ## Estructura de carpetas
@@ -20,7 +20,8 @@ backend/
 ├── notification-service/
 ├── infra/
 │   ├── docker-compose.yml
-│   └── db-init/            # Notas de inicialización
+│   ├── k8s/               # Deployments, Services, namespace `pollos`
+│   └── db-init/           # Notas de PostgreSQL y replicación
 ├── scripts/
 │   └── demo-order-flow.sh
 ├── api-examples.http
@@ -43,7 +44,9 @@ Cada servicio incluye un `.env.example`. Resumen:
 | `MENU_SERVICE_URL` | order-service | URL base del menú (p. ej. `http://localhost:3001`) |
 | `RABBITMQ_URL` | order-service, notification-service | AMQP (p. ej. `amqp://guest:guest@localhost:5672`) |
 | `WRITE_DB_URL` | order-service | PostgreSQL **primario** (Prisma escrituras) |
-| `READ_DB_URL` | order-service | PostgreSQL **réplica** (solo lecturas en `GET /orders`) |
+| `READ_DB_URL` | order-service | PostgreSQL **réplica** (lecturas `GET /orders`, `GET /orders/:id`) |
+| `SETUP_LOGICAL_REPLICATION` | order-service (Docker/K8s) | `true` para crear publicación en primaria y suscripción en réplica al arrancar |
+| `PG_PRIMARY_HOST` / `PG_REPLICA_HOST` | order-service | Hostnames DNS internos (por defecto `postgres-primary` / `postgres-replica`) |
 
 ## Cómo correr cada servicio (local, sin Docker)
 
@@ -97,20 +100,24 @@ docker compose up --build
 - **Pedidos**: [http://localhost:3002/orders](http://localhost:3002/orders)  
 - **RabbitMQ Management**: [http://localhost:15672](http://localhost:15672) (guest/guest)
 
-### Primaria y réplica simulada
+### Primaria y réplica (replicación lógica)
 
-Hay dos contenedores PostgreSQL independientes (`postgres-primary`, `postgres-replica`). El `order-service`:
+Hay dos instancias PostgreSQL (`postgres-primary`, `postgres-replica`). El `order-service`:
 
-- Escribe con **Prisma** usando `WRITE_DB_URL` (primaria).
-- Lee listados y detalle con **`pg`** usando `READ_DB_URL` (réplica).
+- Escribe con **Prisma** en `WRITE_DB_URL` (primaria).
+- Lee con **`pg`** desde `READ_DB_URL` (réplica).
 
-Al arrancar, el script de entrada del contenedor ejecuta `prisma migrate deploy` **dos veces**: primero contra la primaria y luego contra la réplica, para que **ambas tengan el mismo esquema**.  
-**No hay replicación física de datos**: lo insertado en la primaria **no** aparece automáticamente en la réplica. Por eso, en Compose por defecto, `GET /orders` puede devolver una lista vacía mientras la primaria sí tiene filas.
+En **Docker Compose** y **Kubernetes**, `SETUP_LOGICAL_REPLICATION=true` hace que, tras `prisma migrate deploy` en ambas bases, se ejecute `order-service/scripts/setup-logical-replication.sh`:
 
-**Opciones académicas defendibles:**
+1. La primaria corre con `wal_level=logical`.
+2. Se crea la publicación `pollos_orders_pub` sobre la tabla `orders`.
+3. En la réplica se crea la suscripción `pollos_orders_sub` hacia la primaria.
 
-1. Explicar en clase que el **código** separa lectura/escritura y que en producción la réplica estaría sincronizada.  
-2. Para una demo local rápida, apuntar `READ_DB_URL` al **mismo** host que la primaria (por ejemplo en un `docker-compose.override.yml`).
+Con eso, los datos escritos en la primaria **se replican** a la réplica y `GET /orders` refleja los pedidos creados con `POST /orders` (tras un breve retardo de replicación).
+
+**Desarrollo local con un solo Postgres:** usa la misma URL en `READ_DB_URL` y `WRITE_DB_URL` y **no** definas `SETUP_LOGICAL_REPLICATION`.
+
+**Si la primaria ya existía sin `wal_level=logical`** en el volumen, recrea los volúmenes (`docker compose down -v`) o el arranque puede fallar al crear la publicación.
 
 ## Endpoints
 
@@ -148,7 +155,7 @@ Al arrancar, el script de entrada del contenedor ejecuta `prisma migrate deploy`
 1. El cliente llama `POST /orders` con `customerName` e `items` (`productId`, `quantity`).
 2. `order-service` consulta `menu-service` por cada producto (timeout ~5s).
 3. Se valida existencia y `available`, se calculan subtotales y total.
-4. Se persiste en la **primaria** (Prisma).
+4. Se persiste en la **primaria** (Prisma); la réplica recibe la fila vía replicación lógica cuando está configurada.
 5. Se publica `order.created`.
 6. `notification-service` consume el mensaje y escribe un bloque de log legible.
 
@@ -173,144 +180,122 @@ Al cambiar estado con `PATCH /orders/:id/status`, se actualiza la primaria y se 
 
 ## Notas
 
-- No hay frontend ni manifiestos Kubernetes en este repositorio.
+- No hay frontend; los manifiestos Kubernetes viven en `infra/k8s/`.
 - El menú es **semilla en memoria** (`menu-service/src/services/menu-seed.ts`).
-- `notification-service` deja un `NotificationDispatcherService` preparado para WebSocket/email sin implementarlos aún.
+- `notification-service` expone un `NotificationDispatcherService` preparado para WebSocket/email sin implementarlos aún.
 
-## Infraestructura y despliegue
-Arquitectura desplegada
+## Infraestructura y despliegue (Kubernetes)
 
-El sistema está compuesto por:
+### Arquitectura en el clúster
 
-menu-service
-order-service (con 2 réplicas)
-notification-service
-postgres-primary
-postgres-replica
-rabbitmq
+- `menu-service`, `order-service` (**2 réplicas**), `notification-service`
+- `postgres-primary` (WAL lógico), `postgres-replica` (suscriptor), `rabbitmq`
+- Namespace: `pollos`
 
-Todos desplegados dentro del namespace:
+### Prerrequisitos
 
-pollos
- Prerrequisitos
-Docker Desktop instalado
-Minikube instalado
-kubectl instalado
-Node.js (para build de servicios)
- 1. Iniciar Minikube
-minikube start --driver=docker
+- Docker (o Docker Desktop)
+- Minikube (u otro clúster local), `kubectl`
+- Node.js 20+ (solo para compilar si ajustas código)
 
-Verificar:
+### Pasos (desde `infra/k8s/`)
 
-kubectl get nodes
- 2. Estructura de Kubernetes
+1. **Iniciar Minikube** (ejemplo):
 
-Crear carpeta:
+   ```bash
+   minikube start --driver=docker
+   kubectl get nodes
+   ```
 
-infra/k8s
+2. **Namespace**
 
-Aquí se encuentran todos los manifiestos YAML:
+   ```bash
+   kubectl apply -f namespace.yaml
+   kubectl get ns
+   ```
 
-namespace
-deployments
-services
- 3. Crear namespace
-kubectl apply -f namespace.yaml
+3. **Bases de datos y RabbitMQ**
 
-Verificar:
+   ```bash
+   kubectl apply -f postgres-primary-deployment.yaml
+   kubectl apply -f postgres-primary-service.yaml
+   kubectl apply -f postgres-replica-deployment.yaml
+   kubectl apply -f postgres-replica-service.yaml
+   kubectl apply -f rabbitmq-deployment.yaml
+   kubectl apply -f rabbitmq-service.yaml
+   ```
 
-kubectl get ns
- 4. Desplegar base de datos
-PostgreSQL Primary
-kubectl apply -f postgres-primary-deployment.yaml
-kubectl apply -f postgres-primary-service.yaml
-PostgreSQL Replica
-kubectl apply -f postgres-replica-deployment.yaml
-kubectl apply -f postgres-replica-service.yaml
- 5. Desplegar RabbitMQ
-kubectl apply -f rabbitmq-deployment.yaml
-kubectl apply -f rabbitmq-service.yaml
- 6. Construir imágenes
+4. **Imágenes** (desde la raíz del repo `backend/`):
 
-Desde la raíz del proyecto:
+   ```bash
+   docker build -t pollos-menu-service:latest -f menu-service/Dockerfile .
+   docker build -t pollos-order-service:latest -f order-service/Dockerfile .
+   docker build -t pollos-notification-service:latest -f notification-service/Dockerfile .
+   ```
 
-docker build -t pollos-menu-service:latest -f menu-service/Dockerfile .
-docker build -t pollos-order-service:latest -f order-service/Dockerfile .
-docker build -t pollos-notification-service:latest -f notification-service/Dockerfile .
- 7. Cargar imágenes en Minikube
-minikube image load pollos-menu-service:latest
-minikube image load pollos-order-service:latest
-minikube image load pollos-notification-service:latest
+5. **Cargar imágenes en Minikube**
 
-Verificar:
+   ```bash
+   minikube image load pollos-menu-service:latest
+   minikube image load pollos-order-service:latest
+   minikube image load pollos-notification-service:latest
+   ```
 
-minikube image ls
- 8. Desplegar microservicios
-Menu Service
-kubectl apply -f menu-service-deployment.yaml
-kubectl apply -f menu-service-service.yaml
-Order Service (2 réplicas)
-kubectl apply -f order-service-deployment.yaml
-kubectl apply -f order-service-service.yaml
-Notification Service
-kubectl apply -f notification-service-deployment.yaml
-kubectl apply -f notification-service-service.yaml
- 9. Verificación
-Pods
-kubectl get pods -n pollos
-Services
-kubectl get services -n pollos
-Deployments
-kubectl get deployments -n pollos
- 10. Exposición del sistema
+6. **Microservicios**
 
-Obtener URL externa:
+   ```bash
+   kubectl apply -f menu-service-deployment.yaml
+   kubectl apply -f menu-service-service.yaml
+   kubectl apply -f order-service-deployment.yaml
+   kubectl apply -f order-service-service.yaml
+   kubectl apply -f notification-service-deployment.yaml
+   kubectl apply -f notification-service-service.yaml
+   ```
 
-minikube service order-service -n pollos --url
+7. **Verificación**
 
-Probar:
+   ```bash
+   kubectl get pods,svc,deploy -n pollos
+   ```
 
-curl <URL>/health
- 11. Comunicación entre servicios
+8. **Exposición externa** (`order-service` es **NodePort** 30002):
 
-Flujo:
+   ```bash
+   minikube service order-service -n pollos --url
+   curl "$(minikube service order-service -n pollos --url)/health"
+   ```
 
-order-service recibe pedido
-consulta menu-service
-guarda en postgres-primary
-publica evento en RabbitMQ
-notification-service consume evento
+### Comunicación entre servicios
 
-Ver logs:
+Flujo típico: el cliente pega al `order-service` → HTTP a `menu-service` → escritura en `postgres-primary` → replicación lógica hacia `postgres-replica` → lecturas `GET /orders` desde la réplica → evento en RabbitMQ → `notification-service`.
 
+```bash
 kubectl logs deployment/order-service -n pollos
 kubectl logs deployment/notification-service -n pollos
- 12. Prueba de resiliencia
+```
 
-Eliminar un pod:
+### Resiliencia (réplicas del order-service)
 
-kubectl delete pod <nombre-pod> -n pollos
-
-Ver recreación automática:
-
+```bash
+kubectl delete pod -n pollos -l app=order-service
 kubectl get pods -n pollos -w
- 13. Pruebas funcionales
-Health
-curl <URL>/health
-Crear pedido
-curl -X POST <URL>/orders \
+```
+
+### Prueba rápida de API
+
+```bash
+URL=$(minikube service order-service -n pollos --url)
+curl -sf "$URL/health"
+curl -sf -X POST "$URL/orders" \
   -H "Content-Type: application/json" \
-  -d '{
-    "customerName": "Melissa",
-    "items": [
-      { "productId": 1, "quantity": 2 }
-    ]
-  }'
- 14. Base de datos distribuida
-Escritura → postgres-primary
-Lectura → postgres-replica
+  -d '{"customerName":"Demo","items":[{"productId":1,"quantity":1}]}'
+curl -sf "$URL/orders"
+```
 
-Configurado en:
+La lista en `GET /orders` debe incluir el pedido creado (lectura desde la réplica tras replicar).
 
-WRITE_DB_URL
-READ_DB_URL
+### Base de datos distribuida
+
+- **Escritura:** `WRITE_DB_URL` → `postgres-primary` (Prisma).
+- **Lectura:** `READ_DB_URL` → `postgres-replica` (`pg`).
+- **Sincronización:** publicación `pollos_orders_pub` / suscripción `pollos_orders_sub` (script al arrancar `order-service` con `SETUP_LOGICAL_REPLICATION=true`).

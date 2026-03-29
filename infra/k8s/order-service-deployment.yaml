@@ -24,6 +24,12 @@ spec:
               value: "3002"
             - name: NODE_ENV
               value: "production"
+            - name: SETUP_LOGICAL_REPLICATION
+              value: "true"
+            - name: PG_PRIMARY_HOST
+              value: "postgres-primary"
+            - name: PG_REPLICA_HOST
+              value: "postgres-replica"
             - name: MENU_SERVICE_URL
               value: "http://menu-service:3001"
             - name: RABBITMQ_URL

@@ -16,6 +16,14 @@ spec:
       containers:
         - name: postgres-primary
           image: postgres:16-alpine
+          args:
+            - postgres
+            - -c
+            - wal_level=logical
+            - -c
+            - max_replication_slots=8
+            - -c
+            - max_wal_senders=8
           ports:
             - containerPort: 5432
           env:

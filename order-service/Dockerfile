@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache curl openssl libc6-compat
+RUN apk add --no-cache curl openssl libc6-compat postgresql-client
 
 WORKDIR /app
 
@@ -17,8 +17,9 @@ COPY order-service/prisma ./prisma
 COPY order-service/src ./src
 COPY order-service/tsconfig.json ./
 COPY order-service/docker-entrypoint.sh ./
+COPY order-service/scripts ./scripts
 RUN sed -i 's/\r$//' docker-entrypoint.sh
-RUN chmod +x docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh ./scripts/setup-logical-replication.sh
 
 RUN npx prisma generate
 RUN npm run build

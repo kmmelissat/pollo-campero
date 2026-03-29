@@ -2,6 +2,14 @@ services:
   postgres-primary:
     image: postgres:16-alpine
     container_name: pollos-postgres-primary
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=8
+      - -c
+      - max_wal_senders=8
     environment:
       POSTGRES_USER: pollos
       POSTGRES_PASSWORD: pollos
@@ -77,6 +85,9 @@ services:
     environment:
       PORT: 3002
       NODE_ENV: production
+      SETUP_LOGICAL_REPLICATION: "true"
+      PG_PRIMARY_HOST: postgres-primary
+      PG_REPLICA_HOST: postgres-replica
       MENU_SERVICE_URL: http://menu-service:3001
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       WRITE_DB_URL: postgresql://pollos:pollos@postgres-primary:5432/orders
